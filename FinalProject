@@ -1,0 +1,193 @@
+import numpy
+import pandas as pd
+from matplotlib import pyplot, cm
+
+pr = 1  # prandtl
+le = 1.2
+rac = -1  # Rac/LeRa
+ra = 34000
+
+a = 4
+nx = 61
+nz = 61
+nt = 16000
+nit = 50
+
+dx = 1 / (nx - 1)
+dz = a / (nz - 1)
+x = numpy.linspace(0, 1, nx)
+y = numpy.linspace(0, a, nz)
+X, Y = numpy.meshgrid(x, y)
+
+# Initialize dataFrame to extract future timestep values
+data = {"x": x, "y": y}
+df = pd.DataFrame.from_dict(data)
+x_cord = df['x'].index[df['x'] == .4]
+y_cord = df['y'].index[(df['y'] > .86) & (df['y'] < .87)]
+coordinate = [y_cord, x_cord]
+
+rho = 1
+nu = .1
+dt = .01
+
+u = numpy.zeros((nz, nx))
+w = numpy.zeros((nz, nx))
+p = numpy.zeros((nz, nx))
+b = numpy.zeros((nz, nx))
+theta = numpy.zeros((nz, nx))
+c = numpy.zeros((nz, nx))
+
+
+def build_up_b(b, rho, dt, u, w, c, theta, dx, dz, pr, rac):
+    b[1:-1, 1:-1] = (rho * (1 / dt * ((u[1:-1, 2:] - u[1:-1, 0:-2]) /
+                                      (2 * dx) + (w[2:, 1:-1] - w[0:-2, 1:-1]) / (2 * dz)) -
+                            ((u[1:-1, 2:] - u[1:-1, 0:-2]) / (2 * dx)) ** 2 -
+                            2 * ((u[2:, 1:-1] - u[0:-2, 1:-1]) / (2 * dz) *
+                                 (w[1:-1, 2:] - w[1:-1, 0:-2]) / (2 * dx)) -
+                            ((w[2:, 1:-1] - w[0:-2, 1:-1]) / (2 * dz)) ** 2) +
+                     pr * (((theta[2:, 1:-1] - theta[0:-2, 1:-1]) / (2 * dz)) +
+                           rac * ((c[2:, 1:-1] - c[0:-2, 1:-1]) / (2 * dz))))
+    return b
+
+
+def pressure_poisson(p, dx, dz, b):
+    pn = numpy.empty_like(p)
+    pn = p.copy()
+
+    for q in range(nit):
+        pn = p.copy()
+        p[1:-1, 1:-1] = (((pn[1:-1, 2:] + pn[1:-1, 0:-2]) * dz ** 2 +
+                          (pn[2:, 1:-1] + pn[0:-2, 1:-1]) * dx ** 2) /
+                         (2 * (dx ** 2 + dz ** 2)) -
+                         dx ** 2 * dz ** 2 / (2 * (dx ** 2 + dz ** 2)) *
+                         b[1:-1, 1:-1])
+
+        p[:, -1] = p[:, -2]  # dp/dx = 0 at x = 2
+        p[0, :] = p[1, :]  # dp/dz = 0 at y = 0
+        p[:, 0] = p[:, 1]  # dp/dx = 0 at x = 0
+        p[-1, :] = 0  # p = 0 at y = 2
+
+    return p
+
+
+def cavity_flow(nt, u, w, theta, c, dt, dx, dz, p, rho, nu, pr, le, rac, ra, coordinate):
+    un = numpy.empty_like(u)
+    wn = numpy.empty_like(w)
+    b = numpy.zeros((nz, nx))
+    part_b = numpy.zeros((10000, 3))
+
+    for n in range(nt):
+        un = u.copy()
+        wn = w.copy()
+        thetan = theta.copy()
+        cn = c.copy()
+
+        b = build_up_b(b, rho, dt, u, w, c, theta, dx, dz, pr, rac)
+        p = pressure_poisson(p, dx, dz, b)
+
+        u[1:-1, 1:-1] = (un[1:-1, 1:-1] - un[1:-1, 1:-1] * (dt / dx) * (un[1:-1, 1:-1] - un[1:-1, 0:-2]) -
+                         wn[1:-1, 1:-1] * (dt / dz) * (un[1:-1, 1:-1] - un[0:-2, 1:-1]) - dt / (2 * dx) *
+                         (p[1:-1, 2:] - p[1:-1, 0:-2]) + (pr / (ra ** .5)) *
+                         ((dt / dx ** 2) * (un[1:-1, 2:] - 2 * un[1:-1, 1:-1] + un[1:-1, 0:-2]) + (dt / dz ** 2) *
+                          (un[2:, 1:-1] - 2 * un[1:-1, 1:-1] + un[0:-2, 1:-1])))
+
+        w[1:-1, 1:-1] = (wn[1:-1, 1:-1] -
+                         un[1:-1, 1:-1] * dt / dx *
+                         (wn[1:-1, 1:-1] - wn[1:-1, 0:-2]) -
+                         wn[1:-1, 1:-1] * dt / dz *
+                         (wn[1:-1, 1:-1] - wn[0:-2, 1:-1]) -
+                         dt / (2 * rho * dz) * (p[2:, 1:-1] - p[0:-2, 1:-1]) +
+                         (pr / (ra ** .5)) * (dt / dx ** 2 *
+                                              (wn[1:-1, 2:] - 2 * wn[1:-1, 1:-1] + wn[1:-1, 0:-2]) +
+                                              dt / dz ** 2 *
+                                              (wn[2:, 1:-1] - 2 * wn[1:-1, 1:-1] + wn[0:-2, 1:-1]))) + \
+                        (pr * dt) * (theta[1:-1, 1:-1] + rac * cn[1:-1, 1:-1])
+
+        theta[1:-1, 1:-1] = (thetan[1:-1, 1:-1] - un[1:-1, 1:-1] * (dt / (2 * dx)) *
+                             (thetan[1:-1, 2:] - thetan[1:-1, 0:-2]) - wn[1:-1, 1:-1] * (dt / (2 * dz)) *
+                             (thetan[2:, 1:-1] - thetan[0:-2, 1:-1]) + (1 / ra ** .5) *
+                             ((dt / dx ** 2) * (thetan[1:-1, 2:] - 2 * thetan[1:-1, 1:-1] + thetan[1:-1, 0:-2]) +
+                              (dt / dz ** 2) * (thetan[2:, 1:-1] - 2 * thetan[1:-1, 1:-1] + thetan[0:-2, 1:-1])))
+
+        c[1:-1, 1:-1] = (cn[1:-1, 1:-1] - un[1:-1, 1:-1] * (dt / (2 * dx)) * (cn[1:-1, 2:] - cn[1:-1, 0:-2]) -
+                         wn[1:-1, 1:-1] * (dt / (2 * dz)) * (cn[2:, 1:-1] - cn[0:-2, 1:-1]) + (1 / (le * (ra ** .5))) *
+                         (dt / dx ** 2 * (cn[1:-1, 2:] - 2 * cn[1:-1, 1:-1] + cn[1:-1, 0:-2]) + (dt / dz ** 2) *
+                          (cn[2:, 1:-1] - 2 * cn[1:-1, 1:-1] + cn[0:-2, 1:-1])))
+
+        u[0, :] = 0
+        u[:, 0] = 0
+        u[:, -1] = 0
+        u[-1, :] = 0  # set velocity on cavity lid equal to 0
+        w[0, :] = 0
+        w[-1, :] = 0
+        w[:, 0] = 0
+        w[:, -1] = 0
+        theta[:, 0] = .5  # left wall
+        theta[0, :] = theta[1, :]  # bottom wall
+        theta[-1, :] = theta[-2, :]  # top wall
+        theta[:, -1] = -.5  # right wall
+        c[:, 0] = .5  # left wall
+        c[0, :] = c[1, :]  # bottom wall
+        c[-1, :] = c[-2, :]  # top wall
+        c[:, -1] = -.5  # right wall
+
+        if 6000 <= n <= 16000:
+            step = n - 6000
+            part_b[step] = [u[coordinate], theta[coordinate], c[coordinate]]
+
+    return u, w, p, theta, c, part_b
+
+
+u, w, p, theta, c, part_b = cavity_flow(nt, u, w, theta, c, dt, dx, dz, p, rho, nu, pr, le, rac, ra, coordinate)
+
+# Part B
+x = numpy.linspace(6000, 16000, 10000)
+fig1 = pyplot.figure(figsize=(11, 7), dpi=100)
+pyplot.plot(x, -part_b[:, 0])
+pyplot.title('-U vs t')
+pyplot.xlabel('t')
+pyplot.ylabel('-U');
+
+# Part_C
+fig2 = pyplot.figure(figsize=(11, 7), dpi=100)
+pyplot.plot(x, part_b[:, 1])
+pyplot.title('theta vs t')
+pyplot.xlabel('t')
+pyplot.ylabel('theta');
+
+fig3 = pyplot.figure(figsize=(11, 7), dpi=100)
+pyplot.plot(x, part_b[:, 2])
+pyplot.title('C vs t')
+pyplot.xlabel('t')
+pyplot.ylabel('C');
+
+# Stream plot
+fig4 = pyplot.figure(figsize=(11, 7), dpi=100)
+pyplot.streamplot(X, Y, u, w)
+pyplot.title('Stream Plot')
+pyplot.xlabel('X')
+pyplot.ylabel('Y');
+
+# temp plot
+fig5 = pyplot.figure(figsize=(11, 7), dpi=100)
+# plotting the pressure field as a contour
+pyplot.contourf(X, Y, theta, alpha=0.5, cmap=cm.inferno)
+pyplot.colorbar()
+# plotting the pressure field outlines
+pyplot.contour(X, Y, theta, cmap=cm.inferno)
+pyplot.title('Temperature Contour')
+pyplot.xlabel('X')
+pyplot.ylabel('Y');
+
+# C plot
+fig6 = pyplot.figure(figsize=(11, 7), dpi=100)
+# plotting the pressure field as a contour
+pyplot.contourf(X, Y, c, alpha=0.5, cmap=cm.inferno)
+pyplot.colorbar()
+# plotting the pressure field outlines
+pyplot.contour(X, Y, c, cmap=cm.inferno)
+pyplot.title('Concentration Contour')
+pyplot.xlabel('X')
+pyplot.ylabel('Y');
+
+pyplot.show()
